@@ -1,0 +1,803 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <title>狙击外星人 - Web Demo</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #050811;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      color: #e0f2ff;
+      height: 100%;
+      overflow: hidden;
+    }
+    #gameContainer {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    canvas {
+      background: radial-gradient(circle at 50% 20%, #18263d 0%, #050811 55%, #020409 100%);
+      border-radius: 12px;
+      box-shadow: 0 0 40px rgba(0, 240, 255, 0.2);
+    }
+    #hud {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      padding: 12px 16px;
+      box-sizing: border-box;
+    }
+    #hudTop {
+      display: flex;
+      justify-content: space-between;
+      font-size: 13px;
+      text-shadow: 0 0 6px rgba(0, 240, 255, 0.5);
+    }
+    #hudBottom {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-end;
+    }
+    .btn {
+      pointer-events: auto;
+      padding: 6px 10px;
+      margin-right: 6px;
+      border-radius: 999px;
+      border: 1px solid rgba(0, 240, 255, 0.5);
+      background: rgba(3, 12, 24, 0.9);
+      color: #e0f2ff;
+      font-size: 12px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      user-select: none;
+    }
+    .btn:hover {
+      background: rgba(7, 22, 44, 0.95);
+    }
+    .btn:active {
+      transform: translateY(1px);
+    }
+    #centerMessage {
+      pointer-events: none;
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      text-align: center;
+      font-size: 22px;
+      text-shadow: 0 0 12px rgba(0, 240, 255, 0.8);
+    }
+    #centerMessage small {
+      display: block;
+      margin-top: 8px;
+      font-size: 13px;
+      opacity: 0.8;
+    }
+    #comboText {
+      position: absolute;
+      right: 20px;
+      top: 50px;
+      font-size: 16px;
+      color: #7df9ff;
+      text-shadow: 0 0 10px rgba(125, 249, 255, 0.9);
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+<div id="gameContainer">
+  <canvas id="gameCanvas" width="960" height="540"></canvas>
+  <div id="hud">
+    <div id="hudTop">
+      <div>
+        <span id="levelText">Level 1</span>
+        <span id="modeText" style="margin-left:10px;">FAST-PACED</span>
+      </div>
+      <div>
+        Score: <span id="scoreText">0</span>
+        &nbsp;|&nbsp; Combo: <span id="comboCountText">0</span>
+      </div>
+    </div>
+    <div id="hudBottom">
+      <div>
+        <button class="btn" id="scanBtn">SCAN 敌人</button>
+        <button class="btn" id="pauseBtn">暂停</button>
+        <button class="btn" id="nextBtn" style="display:none;">下一关</button>
+      </div>
+      <div style="font-size:11px;opacity:0.8;">
+        鼠标移动瞄准，左键射击，空格屏息（减少准心抖动）
+      </div>
+    </div>
+  </div>
+  <div id="centerMessage"></div>
+  <div id="comboText" style="display:none;"></div>
+</div>
+
+<script>
+(function() {
+  const canvas = document.getElementById('gameCanvas');
+  const ctx = canvas.getContext('2d');
+
+  const levelText = document.getElementById('levelText');
+  const scoreText = document.getElementById('scoreText');
+  const comboCountText = document.getElementById('comboCountText');
+  const centerMessage = document.getElementById('centerMessage');
+  const comboText = document.getElementById('comboText');
+
+  const scanBtn = document.getElementById('scanBtn');
+  const pauseBtn = document.getElementById('pauseBtn');
+  const nextBtn = document.getElementById('nextBtn');
+
+  const WIDTH = canvas.width;
+  const HEIGHT = canvas.height;
+
+  let lastTime = performance.now();
+  let gameState = 'menu'; // 'menu' | 'playing' | 'paused' | 'level_complete' | 'game_over'
+  let level = 1;
+  const maxLevel = 10;
+  let score = 0;
+
+  // timescale / slow motion
+  let timeScale = 1;
+  let slowMoTimer = 0;
+
+  // combo system
+  let comboCount = 0;
+  let lastKillTime = 0;
+  let comboDisplayTimer = 0;
+
+  // scan system
+  let scanActive = false;
+  let scanTimer = 0;
+  let scanCooldown = 0;
+
+  // input
+  const mouse = { x: WIDTH * 0.5, y: HEIGHT * 0.5, down: false };
+  let breathHold = false; // spacebar
+
+  // enemies
+  let enemies = [];
+  let spawnQueue = [];
+  let levelTime = 0;
+  let remainingEnemies = 0;
+
+  // mini boss levels
+  const miniBossLevels = [5, 10];
+
+  function randRange(min, max) {
+    return Math.random() * (max - min) + min;
+  }
+
+  function showCenterMessage(text, sub) {
+    centerMessage.innerHTML = text + (sub ? `<small>${sub}</small>` : '');
+  }
+
+  function clearCenterMessage() {
+    centerMessage.innerHTML = '';
+  }
+
+  function startGame() {
+    level = 1;
+    score = 0;
+    comboCount = 0;
+    slowMoTimer = 0;
+    scanActive = false;
+    scanTimer = 0;
+    scanCooldown = 0;
+    nextBtn.style.display = 'none';
+    startLevel(level);
+  }
+
+  function startLevel(lv) {
+    gameState = 'playing';
+    clearCenterMessage();
+    levelTime = 0;
+    enemies = [];
+    spawnQueue = [];
+
+    levelText.textContent = `Level ${lv}`;
+    remainingEnemies = computeEnemyCountForLevel(lv);
+
+    // spawn patterns: fixed + waves + move_in
+    buildSpawnForLevel(lv);
+
+    // UI
+    pauseBtn.textContent = '暂停';
+  }
+
+  function computeEnemyCountForLevel(lv) {
+    const base = 3;
+    const extra = Math.floor((lv - 1) * 0.6);
+    let count = base + extra;
+    if (miniBossLevels.includes(lv)) {
+      count += 1; // one mini boss
+    }
+    return count;
+  }
+
+  // Enemy object
+  function createEnemy(config) {
+    const isMiniBoss = !!config.miniBoss;
+    const baseRadius = isMiniBoss ? 26 : 18;
+    const headRadius = isMiniBoss ? 12 : 9;
+    const hp = isMiniBoss ? 3 : 1;
+
+    return {
+      x: config.x || WIDTH / 2,
+      y: config.y || HEIGHT / 3,
+      vx: config.vx || 0,
+      vy: config.vy || 0,
+      radius: baseRadius,
+      headOffsetY: -baseRadius * 0.6,
+      headRadius,
+      colorBody: isMiniBoss ? '#ff8c3a' : '#42f5ff',
+      colorHead: isMiniBoss ? '#ffd28a' : '#a8f7ff',
+      hp,
+      maxHp: hp,
+      isMiniBoss,
+      alive: false, // becomes true when spawned
+      spawnDelay: config.spawnDelay || 0,
+      moveType: config.moveType || 'static', // 'static' | 'horizontal' | 'move_in'
+      dir: Math.random() < 0.5 ? -1 : 1,
+      dissolveTimer: 0,
+      justHitHead: false
+    };
+  }
+
+  function buildSpawnForLevel(lv) {
+    // Fixed positions
+    const enemyCount = computeEnemyCountForLevel(lv);
+    let basicCount = enemyCount;
+    let hasMini = false;
+    if (miniBossLevels.includes(lv)) {
+      basicCount -= 1;
+      hasMini = true;
+    }
+
+    const rows = 2;
+    const perRow = Math.ceil(basicCount / rows);
+    let idx = 0;
+    let delayBase = 0;
+
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < perRow; c++) {
+        if (idx >= basicCount) break;
+        const x = (c + 0.5) * (WIDTH / perRow);
+        const y = 140 + r * 80;
+        const spawnDelay = delayBase + randRange(0, 0.6); // wave spawn
+
+        const moveType = (idx % 2 === 0) ? 'horizontal' : 'static';
+
+        spawnQueue.push(createEnemy({
+          x,
+          y,
+          moveType,
+          spawnDelay
+        }));
+        idx++;
+      }
+      delayBase += 0.9; // next wave
+    }
+
+    if (hasMini) {
+      // Mini boss move-in
+      const spawnDelay = 2.0;
+      const startSide = Math.random() < 0.5 ? 'left' : 'right';
+      const x = startSide === 'left' ? -60 : WIDTH + 60;
+      const targetX = WIDTH / 2;
+      const y = 120;
+      const speed = 60;
+      const dir = startSide === 'left' ? 1 : -1;
+
+      spawnQueue.push(createEnemy({
+        x,
+        y,
+        vx: speed * dir,
+        vy: 0,
+        moveType: 'move_in',
+        spawnDelay,
+        miniBoss: true,
+        targetX
+      }));
+    }
+  }
+
+  function spawnEnemiesForTime(dt) {
+    levelTime += dt;
+    const remaining = [];
+    for (const e of spawnQueue) {
+      if (!e.alive && levelTime >= e.spawnDelay) {
+        e.alive = true;
+        enemies.push(e);
+      } else {
+        remaining.push(e);
+      }
+    }
+    spawnQueue = remaining;
+  }
+
+  function updateEnemies(dt) {
+    for (const e of enemies) {
+      if (!e.alive) continue;
+      if (e.dissolveTimer > 0) {
+        e.dissolveTimer -= dt;
+        if (e.dissolveTimer <= 0) {
+          e.alive = false;
+        }
+        continue;
+      }
+
+      if (e.moveType === 'horizontal') {
+        const amp = 40;
+        const speed = 40 + level * 2;
+        e.x += e.dir * speed * dt;
+        if (e.x < 80 || e.x > WIDTH - 80) {
+          e.dir *= -1;
+        }
+        e.y += Math.sin(levelTime * 0.8 + e.x * 0.01) * amp * dt * 0.2;
+      } else if (e.moveType === 'move_in') {
+        const targetX = e.targetX || WIDTH / 2;
+        const dx = targetX - e.x;
+        const speed = 60 + level * 3;
+        if (Math.abs(dx) < 4) {
+          e.x = targetX;
+          e.vx = 0;
+          e.moveType = 'static';
+        } else {
+          e.vx = Math.sign(dx) * speed;
+          e.x += e.vx * dt;
+        }
+      } else {
+        // static tiny breathing
+        e.y += Math.sin(performance.now() / 400 + e.x * 0.01) * 0.05;
+      }
+    }
+  }
+
+  function drawEnemies(ctx) {
+    for (const e of enemies) {
+      if (!e.alive) continue;
+
+      // dissolve alpha
+      let alpha = 1;
+      if (e.dissolveTimer > 0) {
+        alpha = Math.max(0, e.dissolveTimer / 0.4);
+      }
+
+      ctx.save();
+      ctx.globalAlpha = alpha;
+
+      // body
+      const gradient = ctx.createRadialGradient(
+        e.x, e.y, e.radius * 0.2,
+        e.x, e.y, e.radius
+      );
+      gradient.addColorStop(0, e.colorBody);
+      gradient.addColorStop(1, '#09111f');
+      ctx.fillStyle = gradient;
+      ctx.beginPath();
+      ctx.arc(e.x, e.y, e.radius, 0, Math.PI * 2);
+      ctx.fill();
+
+      // head
+      const headX = e.x;
+      const headY = e.y + e.headOffsetY;
+      ctx.fillStyle = e.colorHead;
+      ctx.beginPath();
+      ctx.arc(headX, headY, e.headRadius, 0, Math.PI * 2);
+      ctx.fill();
+
+      // weakpoint glow (if scanActive or auto hint)
+      if (scanActive || e.justHitHead) {
+        ctx.strokeStyle = 'rgba(0,255,255,0.9)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(headX, headY, e.headRadius + 4, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      // mini boss HP bar
+      if (e.isMiniBoss && e.hp > 0) {
+        const barW = 40;
+        const barH = 4;
+        const ratio = e.hp / e.maxHp;
+        ctx.fillStyle = 'rgba(0,0,0,0.7)';
+        ctx.fillRect(e.x - barW / 2, e.y - e.radius - 14, barW, barH);
+        ctx.fillStyle = '#ffb347';
+        ctx.fillRect(e.x - barW / 2, e.y - e.radius - 14, barW * ratio, barH);
+      }
+
+      ctx.restore();
+      e.justHitHead = false;
+    }
+  }
+
+  function drawScope(ctx) {
+    // minimal tech scope around mouse
+    const jitterAmp = breathHold ? 0.5 : 2.5;
+    const jitterX = (Math.random() - 0.5) * jitterAmp;
+    const jitterY = (Math.random() - 0.5) * jitterAmp;
+
+    const cx = mouse.x + jitterX;
+    const cy = mouse.y + jitterY;
+
+    ctx.save();
+    ctx.strokeStyle = 'rgba(0,255,255,0.7)';
+    ctx.lineWidth = 1.3;
+
+    const r = 26;
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // cross lines
+    ctx.beginPath();
+    ctx.moveTo(cx - r - 6, cy);
+    ctx.lineTo(cx - 6, cy);
+    ctx.moveTo(cx + 6, cy);
+    ctx.lineTo(cx + r + 6, cy);
+    ctx.moveTo(cx, cy - r - 6);
+    ctx.lineTo(cx, cy - 6);
+    ctx.moveTo(cx, cy + 6);
+    ctx.lineTo(cx, cy + r + 6);
+    ctx.stroke();
+
+    ctx.restore();
+  }
+
+  function tryShoot() {
+    if (gameState !== 'playing') return;
+    // Slight auto-aim assist: search nearest head within small radius
+    let bestEnemy = null;
+    let bestDist = 99999;
+    const maxAssist = 20;
+
+    enemies.forEach(e => {
+      if (!e.alive || e.dissolveTimer > 0) return;
+      const headX = e.x;
+      const headY = e.y + e.headOffsetY;
+      const dx = mouse.x - headX;
+      const dy = mouse.y - headY;
+      const d = Math.sqrt(dx * dx + dy * dy);
+      if (d < bestDist && d < e.headRadius + maxAssist) {
+        bestDist = d;
+        bestEnemy = e;
+      }
+    });
+
+    let hitEnemy = null;
+    let isHeadshot = false;
+
+    if (bestEnemy) {
+      // auto-snap
+      hitEnemy = bestEnemy;
+      isHeadshot = true;
+    } else {
+      // check direct intersection
+      enemies.forEach(e => {
+        if (!e.alive || e.dissolveTimer > 0) return;
+        const headX = e.x;
+        const headY = e.y + e.headOffsetY;
+        const dxH = mouse.x - headX;
+        const dyH = mouse.y - headY;
+        const dH = Math.sqrt(dxH * dxH + dyH * dyH);
+
+        if (!hitEnemy && dH <= e.headRadius) {
+          hitEnemy = e;
+          isHeadshot = true;
+        }
+      });
+    }
+
+    // Body hit (less爽感)
+    if (!hitEnemy) {
+      enemies.forEach(e => {
+        if (!e.alive || e.dissolveTimer > 0) return;
+        const dx = mouse.x - e.x;
+        const dy = mouse.y - e.y;
+        const d = Math.sqrt(dx * dx + dy * dy);
+        if (!hitEnemy && d <= e.radius) {
+          hitEnemy = e;
+          isHeadshot = false;
+        }
+      });
+    }
+
+    if (!hitEnemy) {
+      // miss – reset combo slightly
+      comboCount = 0;
+      comboCountText.textContent = comboCount;
+      return;
+    }
+
+    // Apply damage
+    if (isHeadshot) {
+      hitEnemy.hp -= hitEnemy.isMiniBoss ? 2 : 1;
+      triggerHeadshotEffects(hitEnemy);
+    } else {
+      hitEnemy.hp -= 1;
+    }
+
+    if (hitEnemy.hp <= 0) {
+      hitEnemy.dissolveTimer = 0.4;
+      remainingEnemies = Math.max(remainingEnemies - 1, 0);
+      onEnemyKilled(isHeadshot, hitEnemy.isMiniBoss);
+    }
+  }
+
+  function triggerHeadshotEffects(enemy) {
+    // slow motion
+    slowMoTimer = 0.4;
+    timeScale = 0.35;
+
+    // micro camera shake (we simulate by global offset)
+    cameraShake(5);
+
+    // mark enemy for head glow this frame
+    enemy.justHitHead = true;
+  }
+
+  let shakeTimer = 0;
+  let shakeIntensity = 0;
+
+  function cameraShake(intensity) {
+    shakeTimer = 0.2;
+    shakeIntensity = intensity;
+  }
+
+  function applyCameraShake() {
+    if (shakeTimer <= 0) return;
+    const factor = shakeTimer / 0.2;
+    const dx = (Math.random() - 0.5) * shakeIntensity * factor;
+    const dy = (Math.random() - 0.5) * shakeIntensity * factor;
+    ctx.translate(dx, dy);
+  }
+
+  function onEnemyKilled(isHeadshot, isMiniBoss) {
+    const now = performance.now() / 1000;
+    const delta = now - lastKillTime;
+    lastKillTime = now;
+
+    if (delta < 2) {
+      comboCount++;
+    } else {
+      comboCount = 1;
+    }
+    comboCountText.textContent = comboCount;
+
+    // Show combo text
+    if (comboCount >= 2) {
+      comboDisplayTimer = 0.8;
+      comboText.style.display = 'block';
+      comboText.textContent = `COMBO x${comboCount}`;
+    }
+
+    // score logic
+    let gain = 10;
+    if (isHeadshot) gain += 10;
+    if (isMiniBoss) gain += 30;
+    gain += comboCount * 2;
+    score += gain;
+    scoreText.textContent = score;
+
+    // If no enemies remain, level complete
+    if (remainingEnemies === 0) {
+      setTimeout(() => {
+        if (gameState === 'playing') {
+          onLevelComplete();
+        }
+      }, 300);
+    }
+  }
+
+  function onLevelComplete() {
+    gameState = 'level_complete';
+    const isLast = level >= maxLevel;
+    showCenterMessage(
+      isLast ? '全通关！' : `Level ${level} 完成！`,
+      isLast ? '你已经清理了全部外星人！' : '点击“下一关”继续狙击外星人'
+    );
+    nextBtn.style.display = isLast ? 'none' : 'inline-flex';
+
+    // 这里是可以插入插屏广告的逻辑钩子
+    // onInterstitialAdOpportunity('post_level');
+  }
+
+  // scan skill
+  function activateScan() {
+    if (scanCooldown > 0 || scanActive) return;
+    scanActive = true;
+    scanTimer = 3.0;
+    scanCooldown = 10.0;
+
+    // 可以在这里触发激励广告（看广告获得额外扫描次数）
+    // onRewardedAdOpportunity('scan_skill');
+
+    // little hint animation via CSS text
+    scanBtn.textContent = '扫描中...';
+  }
+
+  // main update
+  function update(dtRaw) {
+    const dt = dtRaw * timeScale;
+    if (gameState === 'playing') {
+      spawnEnemiesForTime(dt);
+      updateEnemies(dt);
+
+      // slow motion
+      if (slowMoTimer > 0) {
+        slowMoTimer -= dtRaw;
+        if (slowMoTimer <= 0) {
+          timeScale = 1;
+        }
+      }
+
+      // camera shake
+      if (shakeTimer > 0) {
+        shakeTimer -= dt;
+      }
+
+      // scan
+      if (scanActive) {
+        scanTimer -= dt;
+        if (scanTimer <= 0) {
+          scanActive = false;
+          scanBtn.textContent = 'SCAN 敌人';
+        }
+      }
+      if (scanCooldown > 0) {
+        scanCooldown -= dt;
+        if (scanCooldown < 0) scanCooldown = 0;
+      }
+
+      // combo display
+      if (comboDisplayTimer > 0) {
+        comboDisplayTimer -= dt;
+        if (comboDisplayTimer <= 0) {
+          comboText.style.display = 'none';
+        }
+      }
+    }
+  }
+
+  function render() {
+    ctx.clearRect(0, 0, WIDTH, HEIGHT);
+
+    ctx.save();
+    // camera shake
+    applyCameraShake();
+
+    // simple background grid
+    ctx.strokeStyle = 'rgba(0,255,255,0.06)';
+    ctx.lineWidth = 1;
+    for (let x = 0; x < WIDTH; x += 40) {
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, HEIGHT);
+      ctx.stroke();
+    }
+    for (let y = 0; y < HEIGHT; y += 40) {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(WIDTH, y);
+      ctx.stroke();
+    }
+
+    // enemies
+    drawEnemies(ctx);
+
+    // scope
+    drawScope(ctx);
+
+    ctx.restore();
+  }
+
+  function gameLoop(ts) {
+    const dtRaw = (ts - lastTime) / 1000;
+    lastTime = ts;
+
+    if (gameState === 'playing') {
+      update(dtRaw);
+    }
+
+    render();
+    requestAnimationFrame(gameLoop);
+  }
+
+  // input
+  canvas.addEventListener('mousemove', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    mouse.x = (e.clientX - rect.left) * (canvas.width / rect.width);
+    mouse.y = (e.clientY - rect.top) * (canvas.height / rect.height);
+  });
+
+  canvas.addEventListener('mousedown', (e) => {
+    if (e.button === 0) {
+      mouse.down = true;
+      tryShoot();
+    }
+  });
+  canvas.addEventListener('mouseup', (e) => {
+    if (e.button === 0) mouse.down = false;
+  });
+
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') {
+      breathHold = true;
+    }
+    if (e.code === 'KeyP') {
+      togglePause();
+    }
+    if (e.code === 'Enter' && gameState === 'menu') {
+      startGame();
+    }
+  });
+
+  window.addEventListener('keyup', (e) => {
+    if (e.code === 'Space') {
+      breathHold = false;
+    }
+  });
+
+  function togglePause() {
+    if (gameState === 'playing') {
+      gameState = 'paused';
+      pauseBtn.textContent = '继续';
+      showCenterMessage('暂停中', '点击“继续”或按 P 键继续游戏');
+    } else if (gameState === 'paused') {
+      gameState = 'playing';
+      pauseBtn.textContent = '暂停';
+      clearCenterMessage();
+    }
+  }
+
+  pauseBtn.addEventListener('click', () => {
+    if (gameState === 'playing' || gameState === 'paused') {
+      togglePause();
+    }
+  });
+
+  scanBtn.addEventListener('click', () => {
+    if (gameState !== 'playing') return;
+    activateScan();
+  });
+
+  nextBtn.addEventListener('click', () => {
+    if (gameState !== 'level_complete') return;
+    if (level < maxLevel) {
+      level += 1;
+      nextBtn.style.display = 'none';
+      clearCenterMessage();
+      startLevel(level);
+    }
+  });
+
+  // initial screen
+  gameState = 'menu';
+  showCenterMessage(
+    '狙击外星人',
+    '点击画面或按 Enter 开始游戏'
+  );
+
+  canvas.addEventListener('click', () => {
+    if (gameState === 'menu') {
+      startGame();
+    }
+  });
+
+  // start loop
+  requestAnimationFrame(gameLoop);
+})();
+</script>
+</body>
+</html>
